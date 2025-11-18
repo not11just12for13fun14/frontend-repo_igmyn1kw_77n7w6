@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from 'react'
-import { BrowserRouter, Routes, Route, Link, useNavigate } from 'react-router-dom'
+import { useEffect, useMemo, useState, createContext, useContext } from 'react'
+import { BrowserRouter, Routes, Route, Link, useNavigate, useParams } from 'react-router-dom'
 
 const BRAND = {
   navy: '#0A1A2F',
@@ -10,8 +10,23 @@ const BRAND = {
 
 const apiBase = import.meta.env.VITE_BACKEND_URL || ''
 
+// --- Simple user session (demo) ---
+const UserContext = createContext(null)
+function useUser(){ return useContext(UserContext) }
+function UserProvider({ children }){
+  const [user, setUser] = useState(()=>{
+    const saved = localStorage.getItem('fo_user')
+    if(saved) return JSON.parse(saved)
+    const demo = { id: 'demo-user', name: 'Demo Learner', email: 'demo@frontier.app', role: 'student' }
+    localStorage.setItem('fo_user', JSON.stringify(demo))
+    return demo
+  })
+  return <UserContext.Provider value={{user, setUser}}>{children}</UserContext.Provider>
+}
+
 function Shell({ children }) {
   const navigate = useNavigate()
+  const { user } = useUser()
   return (
     <div className="min-h-screen" style={{ backgroundColor: BRAND.bg }}>
       <header className="sticky top-0 z-10 backdrop-blur bg-white/80 border-b" style={{borderColor: 'rgba(10,26,47,0.08)'}}>
@@ -29,7 +44,8 @@ function Shell({ children }) {
             <Link to="/admin" className="text-sm font-medium hover:opacity-80" style={{color: BRAND.navy}}>Admin</Link>
           </nav>
           <div className="flex items-center gap-3">
-            <Link to="/enroll" className="px-4 py-2 rounded-xl text-sm font-semibold shadow" style={{background: BRAND.gold, color: BRAND.navy}}>Enroll Now</Link>
+            <span className="hidden sm:block text-xs font-medium" style={{color:'#5B6B85'}}>Hi, {user?.name}</span>
+            <Link to="/courses" className="px-4 py-2 rounded-xl text-sm font-semibold shadow" style={{background: BRAND.gold, color: BRAND.navy}}>Enroll Now</Link>
           </div>
         </div>
       </header>
@@ -147,15 +163,14 @@ function Courses(){
   )
 }
 
-function useParamsId(){
-  const id = window.location.pathname.split('/').pop()
-  return id
-}
-
 function CourseDetail(){
-  const id = useParamsId()
+  const { id } = useParams()
+  const { user } = useUser()
   const [course, setCourse] = useState(null)
   const [lessons, setLessons] = useState([])
+  const [status, setStatus] = useState('')
+  const [loading, setLoading] = useState(false)
+
   useEffect(()=>{
     fetch((apiBase+`/api/courses`).replace(window.location.origin,''))
       .then(r=>r.json()).then(list=>{
@@ -165,6 +180,28 @@ function CourseDetail(){
     fetch((apiBase+`/api/lessons/${id}`).replace(window.location.origin,''))
       .then(r=>r.json()).then(setLessons)
   }, [id])
+
+  const enrollAndPay = async () => {
+    if(!user || !course) return
+    setLoading(true); setStatus('')
+    try {
+      const payRes = await fetch((apiBase+`/api/payments/create-session`).replace(window.location.origin,''), {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ user_id: user.id, course_id: id, gateway: 'stripe', currency: 'USD' })
+      })
+      const payData = await payRes.json()
+      await fetch((apiBase+`/api/enroll`).replace(window.location.origin,''), {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ user_id: user.id, course_id: id })
+      })
+      setStatus(`Checkout session created (demo): ${payData.session_id}. You are enrolled!`)
+    } catch (e){
+      setStatus('Could not start checkout. Please try again.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
   if(!course) return <Shell><div className="text-sm">Loading...</div></Shell>
   return (
     <Shell>
@@ -190,7 +227,8 @@ function CourseDetail(){
         <div>
           <div className="rounded-2xl p-4 border bg-white">
             <div className="text-2xl font-bold" style={{color: BRAND.navy}}>${course.price}</div>
-            <button className="w-full mt-3 px-4 py-2 rounded-xl font-semibold" style={{background: BRAND.gold, color: BRAND.navy}}>Enroll & Pay</button>
+            <button disabled={loading} onClick={enrollAndPay} className="w-full mt-3 px-4 py-2 rounded-xl font-semibold disabled:opacity-60" style={{background: BRAND.gold, color: BRAND.navy}}>{loading? 'Processing...' : 'Enroll & Pay'}</button>
+            {status && <div className="mt-3 text-xs" style={{color:'#5B6B85'}}>{status}</div>}
             <div className="text-xs mt-3" style={{color:'#5B6B85'}}>Certificate included • Lifetime access</div>
           </div>
           <div className="rounded-2xl p-4 border bg-white mt-4">
@@ -204,12 +242,26 @@ function CourseDetail(){
 }
 
 function LessonRow({ l, courseId }){
+  const { user } = useUser()
   const [open, setOpen] = useState(false)
+  const [done, setDone] = useState(false)
+  const markComplete = async () => {
+    try{
+      await fetch((apiBase+`/api/progress`).replace(window.location.origin,''), {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ user_id: user.id, course_id: courseId, lesson_id: String(l._id) })
+      })
+      setDone(true)
+    }catch(e){ /* ignore */ }
+  }
   return (
     <div className="rounded-xl border bg-white">
       <button onClick={()=>setOpen(o=>!o)} className="w-full px-4 py-3 flex items-center justify-between">
         <div className="text-sm font-medium" style={{color: BRAND.navy}}>{l.title}</div>
-        <div className="text-xs" style={{color: BRAND.teal}}>{open? 'Hide' : 'View'}</div>
+        <div className="text-xs flex items-center gap-2" style={{color: BRAND.teal}}>
+          {done && <span className="inline-block w-2 h-2 rounded-full" style={{background: BRAND.teal}} />}
+          {open? 'Hide' : 'View'}
+        </div>
       </button>
       {open && <div className="px-4 pb-4 text-sm" style={{color:'#374250'}}>
         {l.content_type==='video' && (
@@ -222,7 +274,7 @@ function LessonRow({ l, courseId }){
         )}
         {l.notes && <div className="mt-3 whitespace-pre-wrap text-sm">{l.notes}</div>}
         <div className="mt-3 flex gap-2">
-          <button className="px-3 py-1.5 rounded-lg text-xs font-semibold" style={{background: BRAND.teal, color:'white'}}>Mark complete</button>
+          <button onClick={markComplete} className="px-3 py-1.5 rounded-lg text-xs font-semibold" style={{background: BRAND.teal, color:'white'}}>{done? 'Completed' : 'Mark complete'}</button>
           <Link to={`/quiz/${courseId}`} className="px-3 py-1.5 rounded-lg text-xs font-semibold border" style={{borderColor:'#D0D8E6'}}>Take Quiz</Link>
         </div>
       </div>}
@@ -231,10 +283,12 @@ function LessonRow({ l, courseId }){
 }
 
 function Quiz(){
-  const courseId = window.location.pathname.split('/').pop()
+  const { id: courseId } = useParams()
   const [quiz, setQuiz] = useState(null)
   const [answers, setAnswers] = useState([])
   const [score, setScore] = useState(null)
+  const [certMsg, setCertMsg] = useState('')
+  const { user } = useUser()
   useEffect(()=>{
     fetch((apiBase+`/api/quizzes/${courseId}`).replace(window.location.origin,''))
       .then(r=>r.json()).then(setQuiz)
@@ -243,6 +297,12 @@ function Quiz(){
   const submit = async () => {
     const res = await fetch((apiBase+`/api/quizzes/submit`).replace(window.location.origin,''), {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({quiz_id: quiz._id, answers})})
     const data = await res.json(); setScore(data.score)
+  }
+  const issueCert = async () => {
+    try{
+      const res = await fetch((apiBase+`/api/certificates/issue?user_id=${encodeURIComponent(user.id)}&course_id=${encodeURIComponent(courseId)}`).replace(window.location.origin,''), {method:'POST'})
+      const data = await res.json(); setCertMsg(`Certificate issued: ${data.certificate_code}`)
+    }catch(e){ setCertMsg('Could not issue certificate yet.') }
   }
   return (
     <Shell>
@@ -265,19 +325,25 @@ function Quiz(){
         </div>
         <button onClick={submit} className="mt-4 px-4 py-2 rounded-xl font-semibold" style={{background: BRAND.gold, color: BRAND.navy}}>Submit</button>
         {score!==null && <div className="mt-3 text-sm" style={{color: BRAND.navy}}>Your score: <span className="font-semibold">{score}%</span></div>}
+        {score!==null && score>=50 && (
+          <button onClick={issueCert} className="mt-3 px-3 py-2 rounded-xl text-sm font-semibold" style={{background: BRAND.teal, color:'white'}}>Issue Certificate</button>
+        )}
+        {certMsg && <div className="mt-2 text-xs" style={{color:'#5B6B85'}}>{certMsg}</div>}
       </div>
     </Shell>
   )
 }
 
 function Profile(){
+  const { user } = useUser()
   return (
     <Shell>
       <div className="grid sm:grid-cols-3 gap-6">
         <div className="sm:col-span-1 rounded-2xl border bg-white p-5">
           <div className="w-20 h-20 rounded-2xl bg-slate-200" />
           <div className="mt-3 font-semibold" style={{color: BRAND.navy}}>Your Profile</div>
-          <div className="text-sm" style={{color:'#5B6B85'}}>Track progress, certificates and enrollments.</div>
+          <div className="text-sm" style={{color:'#5B6B85'}}>{user.name} · {user.email}</div>
+          <div className="text-xs mt-2" style={{color:'#8A98AE'}}>Track progress, certificates and enrollments.</div>
         </div>
         <div className="sm:col-span-2 space-y-4">
           <div className="rounded-2xl border bg-white p-5">
@@ -340,14 +406,16 @@ function Home(){
 function App(){
   return (
     <BrowserRouter>
-      <Routes>
-        <Route path="/" element={<Home />} />
-        <Route path="/courses" element={<Courses />} />
-        <Route path="/courses/:id" element={<CourseDetail />} />
-        <Route path="/quiz/:id" element={<Quiz />} />
-        <Route path="/profile" element={<Profile />} />
-        <Route path="/admin" element={<Admin />} />
-      </Routes>
+      <UserProvider>
+        <Routes>
+          <Route path="/" element={<Home />} />
+          <Route path="/courses" element={<Courses />} />
+          <Route path="/courses/:id" element={<CourseDetail />} />
+          <Route path="/quiz/:id" element={<Quiz />} />
+          <Route path="/profile" element={<Profile />} />
+          <Route path="/admin" element={<Admin />} />
+        </Routes>
+      </UserProvider>
     </BrowserRouter>
   )
 }
